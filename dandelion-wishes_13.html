@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dandelion Wishes</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,600;1,600&display=swap" rel="stylesheet">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:#000;overflow:hidden;width:100vw;height:100vh;cursor:none;font-family:'Cormorant Garamond',serif;}
+  #c{position:fixed;top:0;left:0;width:100%;height:100%;z-index:1;}
+  #wc{position:fixed;bottom:24px;right:24px;z-index:10;border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,0.1);width:160px;height:110px;opacity:0.55;transition:opacity 0.3s;}
+  #wc:hover{opacity:0.9;}
+  #wv{width:100%;height:100%;object-fit:cover;transform:scaleX(-1);display:block;}
+  #tc{position:absolute;top:0;left:0;width:100%;height:100%;transform:scaleX(-1);}
+  #info{position:fixed;top:26px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,0.22);font-size:11px;font-weight:300;letter-spacing:0.26em;text-transform:uppercase;z-index:10;font-style:italic;pointer-events:none;white-space:nowrap;}
+  #md{position:fixed;top:42px;left:14px;color:rgba(255,200,80,0.2);font-size:9px;z-index:10;font-family:monospace;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="wc"><video id="wv" autoplay muted playsinline></video><canvas id="tc"></canvas></div>
+<div id="info">point your finger anywhere to begin</div>
+<div id="md"></div>
+<script>window.alert=()=>{};</script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+<script>
+// ── QUOTES ────────────────────────────────────────────────────────────────────
+const QUOTES=[
+  'wishes travel further than you think',
+  'even weeds find a way to bloom',
+  'grow in the cracks',
+  'rooted, then free',
+  'scatter and see where you land',
+  'some things only spread when you let go',
+  'every seed finds its own ground',
+  'planted in the wrong place, still grew',
+  'the wind decides where you land',
+  'stubborn and soft',
+  'built to scatter',
+  'persistence looks like a weed',
+  'i grew where no one watered me',
+  'carried by wind',
+  'still here',
+  'somewhere, it lands',
+  'find the crack',
+  'it spreads',
+  'wildness is a kind of wisdom',
+  'grow anyway'
+];
+let qIdx=0;
+
+// ── CANVAS ────────────────────────────────────────────────────────────────────
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+function resize(){canvas.width=window.innerWidth;canvas.height=window.innerHeight;}
+resize();window.addEventListener('resize',resize);
+const cx=()=>canvas.width/2;
+const SH=()=>canvas.height*0.50;
+const TX=()=>cx();
+const TY=()=>canvas.height-SH();
+
+// ── AUDIO — sparkle only, no chimes ──────────────────────────────────────────
+let aCtx=null;
+function ac(){if(!aCtx)aCtx=new(window.AudioContext||window.webkitAudioContext)();return aCtx;}
+
+function tinkle(freq, vol=0.07, dur=0.35, delay=0){
+  try{
+    const a=ac();
+    const o=a.createOscillator(),g=a.createGain();
+    // triangle wave = softer, less piercing than sine for high freqs
+    o.type='triangle';
+    o.frequency.setValueAtTime(freq, a.currentTime+delay);
+    o.frequency.exponentialRampToValueAtTime(freq*0.98, a.currentTime+delay+dur);
+    g.gain.setValueAtTime(0, a.currentTime+delay);
+    g.gain.linearRampToValueAtTime(vol, a.currentTime+delay+0.008);
+    g.gain.exponentialRampToValueAtTime(0.001, a.currentTime+delay+dur);
+    o.connect(g);g.connect(a.destination);
+    o.start(a.currentTime+delay);o.stop(a.currentTime+delay+dur+0.05);
+  }catch(e){}
+}
+
+function sparkleRise(base=1000, n=5){
+  // rising sparkle cascade — like fairy dust
+  for(let i=0;i<n;i++){
+    const f=base+i*rand(60,120);
+    tinkle(f, 0.06, 0.28, i*rand(0.03,0.07));
+  }
+}
+function sparkleShimmer(base=1200, n=4){
+  // random shimmer cluster
+  for(let i=0;i<n;i++) tinkle(base+rand(-200,400), 0.05, 0.22, rand(0,0.1));
+}
+function windWhisper(){
+  // very soft filtered noise — barely audible breath
+  try{
+    const a=ac();
+    const buf=a.createBuffer(1,a.sampleRate*0.8,a.sampleRate);
+    const d=buf.getChannelData(0);
+    for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,2)*0.08;
+    const src=a.createBufferSource(); src.buffer=buf;
+    const f=a.createBiquadFilter(); f.type='highpass'; f.frequency.value=2000;
+    const g=a.createGain(); g.gain.setValueAtTime(0.12,a.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001,a.currentTime+0.8);
+    src.connect(f);f.connect(g);g.connect(a.destination);src.start();
+  }catch(e){}
+}
+
+// ── STATE ─────────────────────────────────────────────────────────────────────
+let phase=0,phaseTime=0,breathe=0;
+// Single 0→1 growth value drives the entire seed→stem→bud→center→petals sequence
+// Sub-stages are derived ranges so nothing ever appears before its parent
+let growProgress=0;   // 0=seed, 1=full yellow flower (driven by gestures)
+let whiteP=0,stemP=0; // stemP kept for compatibility but derived from growProgress
+let fallingPetals=[],petalFallDone=false;
+// Derived sub-progress values (computed each frame from growProgress)
+let _stemP=0,_budP=0,_centerP=0,_petalP=0;
+let seeds=[],letterParticles=[],quoteOpacity=0,quoteText='',quoteBuilt=false,quoteSounded=false;
+let handOpen=false,fingerTimer=0,mouthRatio=0,mouthTimer=0;
+let wiggleHistory=[],lastWiggleState=false,wiggleCount=0,wiggleTimer=0;
+let pinchActive=false,pinchTimer=0;
+const MOUTH_T=0.044;
+let mx=-200,my=-200;
+// ── STARS + BACKGROUND ───────────────────────────────────────────────────────
+const STARS=[];
+(function initStars(){
+  for(let i=0;i<220;i++){
+    STARS.push({
+      x:Math.random(), y:Math.random(),   // normalised 0-1
+      r: Math.random()<0.08 ? Math.random()*1.4+0.8   // bright star
+       : Math.random()<0.4  ? Math.random()*0.8+0.3   // medium
+       : Math.random()*0.4+0.1,                        // faint
+      twinklePhase: Math.random()*Math.PI*2,
+      twinkleSpeed: Math.random()*0.6+0.2,
+      baseBright:   Math.random()*0.55+0.25
+    });
+  }
+})();
+
+function drawBackground(){
+  const W=canvas.width, H=canvas.height;
+  // Deep cobalt-to-indigo vertical gradient — matches reference blue
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0.00,'#0a0e1a');   // near-black top
+  bg.addColorStop(0.18,'#0d1635');   // deep navy
+  bg.addColorStop(0.45,'#112568');   // rich cobalt — the reference blue
+  bg.addColorStop(0.72,'#0e1f55');   // slightly deeper mid
+  bg.addColorStop(1.00,'#060c1e');   // dark base where stem grows
+  ctx.fillStyle=bg;
+  ctx.fillRect(0,0,W,H);
+
+  // Subtle radial vignette — darkens edges, focuses eye on centre
+  const vig=ctx.createRadialGradient(W/2,H*0.42,H*0.05,W/2,H*0.42,H*0.75);
+  vig.addColorStop(0,'rgba(15,35,100,0.0)');
+  vig.addColorStop(1,'rgba(0,4,14,0.55)');
+  ctx.fillStyle=vig;
+  ctx.fillRect(0,0,W,H);
+
+  // Stars
+  const t=performance.now()/1000;
+  STARS.forEach(s=>{
+    const twinkle=s.baseBright+Math.sin(t*s.twinkleSpeed+s.twinklePhase)*0.18;
+    const alpha=Math.max(0,Math.min(1,twinkle));
+    const sx=s.x*W, sy=s.y*H*0.85; // keep stars in upper 85% of screen
+    ctx.save();
+    ctx.globalAlpha=alpha;
+    // tiny glow for brighter stars
+    if(s.r>0.9){
+      const sg=ctx.createRadialGradient(sx,sy,0,sx,sy,s.r*4);
+      sg.addColorStop(0,`rgba(200,215,255,${alpha*0.4})`);
+      sg.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.beginPath();ctx.arc(sx,sy,s.r*4,0,Math.PI*2);
+      ctx.fillStyle=sg;ctx.fill();
+    }
+    ctx.beginPath();ctx.arc(sx,sy,s.r,0,Math.PI*2);
+    ctx.fillStyle=`rgba(210,225,255,${alpha})`;
+    ctx.fill();
+    ctx.restore();
+  });
+}
+
+
+document.addEventListener('mousemove',e=>{mx=e.clientX;my=e.clientY;});
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+const lerp=(a,b,t)=>a+(b-a)*t;
+const clamp=(v,a,b)=>Math.min(Math.max(v,a),b);
+const rand=(a,b)=>Math.random()*(b-a)+a;
+const easeOut=t=>1-Math.pow(1-t,3);
+const easeOutQuint=t=>1-Math.pow(1-t,5);
+
+// ── DERIVE SUB-STAGE PROGRESS FROM SINGLE growProgress ───────────────────────
+// Timeline:
+//   0.00–0.30  stem grows from ground (stemP 0→1)
+//   0.28–0.48  bud forms at tip       (budP  0→1, starts slightly before stem done)
+//   0.46–0.62  center disc emerges    (centerP 0→1)
+//   0.58–1.00  petals bloom outward   (petalP  0→1)
+// Slight overlaps create smooth organic feel without popping
+function deriveStages(g){
+  _stemP   = clamp((g-0.00)/0.30, 0, 1);
+  _budP    = clamp((g-0.28)/0.22, 0, 1);
+  _centerP = clamp((g-0.46)/0.18, 0, 1);
+  _petalP  = clamp((g-0.58)/0.42, 0, 1);
+}
+
+function setPhase(p){
+  phase=p;phaseTime=0;
+  const m={0:'point your finger anywhere to begin',1:'open and close your hand to grow',2:'wiggle all fingers to release petals',3:'',4:'open and close to grow white bloom',5:'make an O with lips  ·  or pinch to blow',6:'',7:'',8:'point your finger to begin again'};
+  document.getElementById('info').textContent=m[p]??'';
+}
+
+function growTick(){
+  if(phase===1){
+    // Each open/close advances the whole flower — stem first, then bud, then petals
+    const prev=growProgress;
+    growProgress=clamp(growProgress+0.12,0,1);
+    deriveStages(growProgress);
+    // Sound changes as we pass each sub-stage
+    if(prev<0.30&&growProgress>=0.30) sparkleRise(700,3);      // stem done
+    else if(prev<0.48&&growProgress>=0.48) sparkleRise(850,4); // bud open
+    else if(prev<0.62&&growProgress>=0.62) sparkleRise(950,4); // center shows
+    else sparkleShimmer(600+growProgress*400,2);
+    if(growProgress>=1){sparkleRise(1100,6);setPhase(2);}
+  } else if(phase===4){
+    whiteP=clamp(whiteP+0.22,0,1);
+    sparkleRise(1100+whiteP*300,3);
+    if(whiteP>=1){sparkleRise(1400,6);setPhase(5);}
+  }
+}
+// wiggle — releases petals (only valid in phase 2 = full yellow bloom)
+function wiggleTick(){
+  if(phase===2){
+    sparkleShimmer(700,3);
+    spawnFallingPetals();setPhase(3);
+  }
+}
+
+// ── STEM ──────────────────────────────────────────────────────────────────────
+function drawStem(sp){
+  if(sp<=0)return;
+  const bx=cx(),by=canvas.height,ty=by-SH()*sp;
+  // subtle wind sway
+  const sway=Math.sin(breathe*0.7)*4*sp;
+  ctx.beginPath();ctx.moveTo(bx,by);
+  ctx.bezierCurveTo(bx+sway*0.3,by-SH()*sp*0.35,bx+sway,by-SH()*sp*0.7,bx+sway*0.5,ty);
+  ctx.strokeStyle=`rgba(78,112,60,${sp})`;ctx.lineWidth=2.8;ctx.lineCap='round';ctx.stroke();
+  if(sp>0.45){
+    const lp=(sp-0.45)/0.55;
+    drawLeaf(bx,by-SH()*0.26,-1,lp*0.9,sway);
+    drawLeaf(bx,by-SH()*0.42,1,lp*0.75,sway);
+  }
+}
+function drawLeaf(x,y,dir,op,sway=0){
+  if(op<=0)return;
+  ctx.save();ctx.globalAlpha=op;
+  // slightly animated leaf curl
+  const curl=Math.sin(breathe*0.8+dir)*3;
+  ctx.beginPath();ctx.moveTo(x,y);
+  ctx.quadraticCurveTo(x+dir*34+sway*0.3,y-8+curl,x+dir*22,y-28);
+  ctx.quadraticCurveTo(x+dir*9,y-16,x,y);
+  ctx.fillStyle='#4a6b3a';ctx.fill();ctx.restore();
+}
+
+// ── BUD — reference accurate: drooping sepals curl open as bp grows ──────────
+function drawBud(x,y,bp){
+  if(bp<=0)return;
+  ctx.save();
+
+  // bp 0→0.4 = tight closed bud, sepals upright and close together
+  // bp 0.4→0.8 = sepals begin to splay outward and droop slightly
+  // bp 0.8→1.0 = sepals fully pulled back, bud opening
+
+  const budH = 44*Math.min(bp*2,1);       // bud body grows in first half
+  const budW = 14 + 8*bp;                  // widens as it opens
+
+  // ── sepal geometry: 8 pointed sepals, they droop and splay as bp increases
+  const NSEP=8;
+  for(let i=0;i<NSEP;i++){
+    const baseAngle=(i/NSEP)*Math.PI*2 - Math.PI/2;
+    // splay: at bp=0 sepals are tight (~15° apart), at bp=1 they droop outward
+    const splayAngle = baseAngle + (bp-0.3)*0.5*(Math.cos(baseAngle)*0.4);
+    // droop: tip of sepal droops downward as bp increases (like ref image)
+    const droopFactor = clamp((bp-0.25)/0.6,0,1);
+    const sepLen = (28 + bp*14)*Math.min(bp*2.5,1);
+    const sepW   = 5 + bp*3;
+
+    const tipX = x + Math.cos(splayAngle)*sepW*0.5;
+    const tipY = y - budH*0.3 + droopFactor*18; // tip droops down
+    const midX = x + Math.cos(splayAngle)*(budW*0.45);
+    const midY = y - budH*0.55;
+
+    ctx.save();ctx.globalAlpha=bp;
+    ctx.beginPath();
+    ctx.moveTo(x + Math.cos(baseAngle)*4, y + Math.sin(baseAngle)*3);
+    ctx.quadraticCurveTo(midX, midY, tipX, tipY - sepLen*(1-droopFactor*0.4));
+    ctx.quadraticCurveTo(x + Math.cos(baseAngle+0.2)*sepW*0.3, midY*0.8,
+                         x - Math.cos(baseAngle)*3, y + Math.sin(baseAngle)*2);
+    ctx.closePath();
+    // darker green sepals matching reference — deep olive-green
+    const green=`hsl(${105+i%2*8},${42-bp*8}%,${22+i%3*5}%)`;
+    ctx.fillStyle=green;ctx.fill();
+    // sepal midrib
+    ctx.beginPath();
+    ctx.moveTo(x+Math.cos(baseAngle)*3,y+Math.sin(baseAngle)*2);
+    ctx.lineTo(tipX,tipY-sepLen*(1-droopFactor*0.3));
+    ctx.strokeStyle=`rgba(30,55,15,${bp*0.4})`;ctx.lineWidth=0.6;ctx.stroke();
+    ctx.restore();
+  }
+
+  // ── bud body — oval green body beneath the sepal tips
+  if(bp<0.65){
+    const bodyH=budH*0.6, bodyW=budW*0.55;
+    ctx.save();ctx.globalAlpha=bp*clamp((0.65-bp)/0.3,0,1);
+    const bg=ctx.createLinearGradient(x-bodyW,y-bodyH,x+bodyW,y);
+    bg.addColorStop(0,'#2a4a1a');bg.addColorStop(1,'#1a3210');
+    ctx.beginPath();ctx.ellipse(x,y-bodyH*0.5,bodyW,bodyH,0,0,Math.PI*2);
+    ctx.fillStyle=bg;ctx.fill();
+    ctx.restore();
+  }
+
+  // ── yellow inside — peeks through as sepals open (bp > 0.3)
+  if(bp>0.3){
+    const peekP=clamp((bp-0.3)/0.7,0,1);
+    const py=y - budH*0.38;
+    const pr2=budW*0.42*peekP;
+    const yg=ctx.createRadialGradient(x,py,0,x,py,pr2*1.8);
+    yg.addColorStop(0,'#fffde0');yg.addColorStop(0.4,'#ffe135');
+    yg.addColorStop(1,`rgba(200,130,0,${peekP*0.7})`);
+    ctx.save();ctx.globalAlpha=peekP*bp;
+    ctx.beginPath();ctx.arc(x,py,pr2,0,Math.PI*2);
+    ctx.fillStyle=yg;ctx.fill();
+    ctx.restore();
+  }
+
+  ctx.restore();
+}
+
+// ── YELLOW FLOWER — organic particle-based, artistic ─────────────────────────
+// yp drives petals, centerP drives disc — ensuring disc only shows when stem done
+function drawYellow(x,y,yp,fadeP,centerP=1){
+  if(yp<=0&&centerP<=0)return;
+  const fade=clamp(1-fadeP,0,1);
+  ctx.save();
+
+  // Seed table — varied petal params baked per instance so petals are never identical
+  // Using deterministic pseudo-random seeded by index
+  const TOTAL=42; // total petals across two layers
+  const petalData=[];
+  let prng=1337;
+  function pr(){ prng=(prng*16807+0)%2147483647; return (prng-1)/2147483646; }
+  for(let i=0;i<TOTAL;i++){
+    const layer=i<16?0:1; // 0=inner short, 1=outer long
+    const baseAngle=(i/TOTAL)*Math.PI*2 - Math.PI/2;
+    petalData.push({
+      layer,
+      angle: baseAngle + (pr()-0.5)*0.28,        // irregular spacing
+      len:   layer===0 ? 38+pr()*22 : 62+pr()*28, // varied length
+      wid:   layer===0 ? 7+pr()*5   : 6+pr()*5,   // varied width
+      skew:  (pr()-0.5)*0.18,                      // slight lean
+      bright:0.82+pr()*0.2,                        // tip brightness varies
+      phaseOff: pr()*Math.PI*2                     // independent breathing
+    });
+  }
+
+  // draw outer ring first (behind center)
+  if(yp>0) petalData.filter(p=>p.layer===1).forEach((p,idx)=>{
+    const t=(idx+16)/TOTAL;
+    const delay=t*0.4;
+    const pp=clamp((yp-delay)/0.6,0,1);
+    if(pp<=0)return;
+
+    // wind: each petal breathes at own frequency
+    const wind=Math.sin(breathe*0.85+p.phaseOff)*0.04;
+    const a=p.angle+wind;
+    const L=p.len*pp*yp, W=p.wid*pp*yp;
+
+    // petal base slightly inset from center
+    const bx=x+Math.cos(a)*12*yp, by=y+Math.sin(a)*12*yp;
+    ctx.save();ctx.translate(bx,by);ctx.rotate(a+Math.PI/2+p.skew);
+
+    const pg=ctx.createLinearGradient(0,W*0.5,0,-L);
+    pg.addColorStop(0,'#7a3a00');
+    pg.addColorStop(0.12,'#c06800');
+    pg.addColorStop(0.45,'#f5c000');
+    pg.addColorStop(0.82,`hsl(52,100%,${68+p.bright*18}%)`);
+    pg.addColorStop(1,'#fffde8');
+
+    // organic petal: slight asymmetry via control point offset
+    const asym=(pr()-0.5)*W*0.4;
+    ctx.beginPath();
+    ctx.moveTo(0,-L);
+    ctx.bezierCurveTo(W*0.65+asym,-L*0.62, W*0.85,-L*0.08, W*0.3, W*0.5);
+    ctx.bezierCurveTo(W*0.1,W*0.7, -W*0.1,W*0.7, -W*0.3,W*0.5);
+    ctx.bezierCurveTo(-W*0.85,-L*0.08, -W*0.65+asym,-L*0.62, 0,-L);
+    ctx.fillStyle=pg;
+    ctx.globalAlpha=easeOut(pp)*fade*0.9;
+    ctx.fill();
+    // delicate midrib — only on longer petals
+    ctx.beginPath();ctx.moveTo(0,W*0.3);ctx.lineTo(0,-L*0.78);
+    ctx.strokeStyle=`rgba(160,90,0,${pp*fade*0.18})`;ctx.lineWidth=0.5;ctx.stroke();
+    ctx.restore();
+  });
+
+  // inner petals
+  if(yp>0) petalData.filter(p=>p.layer===0).forEach((p,idx)=>{
+    const t=idx/16;
+    const delay=t*0.35;
+    const pp=clamp((yp-delay)/0.65,0,1);
+    if(pp<=0)return;
+
+    const wind=Math.sin(breathe*1.1+p.phaseOff)*0.05;
+    const a=p.angle+wind;
+    const L=p.len*pp*yp*0.85, W=p.wid*pp*yp*0.9;
+    const bx=x+Math.cos(a)*8*yp, by=y+Math.sin(a)*8*yp;
+    ctx.save();ctx.translate(bx,by);ctx.rotate(a+Math.PI/2+p.skew);
+
+    const pg=ctx.createLinearGradient(0,W*0.4,0,-L);
+    pg.addColorStop(0,'#8b4500');
+    pg.addColorStop(0.3,'#e09000');
+    pg.addColorStop(0.75,'#ffd400');
+    pg.addColorStop(1,'#fffacc');
+
+    const asym=(pr()-0.5)*W*0.35;
+    ctx.beginPath();
+    ctx.moveTo(0,-L);
+    ctx.bezierCurveTo(W*0.6+asym,-L*0.58, W*0.8,-L*0.05, W*0.25,W*0.4);
+    ctx.bezierCurveTo(W*0.08,W*0.6, -W*0.08,W*0.6, -W*0.25,W*0.4);
+    ctx.bezierCurveTo(-W*0.8,-L*0.05, -W*0.6+asym,-L*0.58, 0,-L);
+    ctx.fillStyle=pg;
+    ctx.globalAlpha=easeOut(pp)*fade*0.88;
+    ctx.fill();
+    ctx.restore();
+  });
+
+  // disc center — only visible after centerP says stem+bud are connected
+  const discR=20*centerP*easeOut(centerP);
+  if(discR>0.5){
+    const cg=ctx.createRadialGradient(x,y,0,x,y,discR);
+    cg.addColorStop(0,'#fffce0');
+    cg.addColorStop(0.2,'#ffe234');
+    cg.addColorStop(0.65,'#c07800');
+    cg.addColorStop(1,'#7a4200');
+    ctx.globalAlpha=fade*centerP;
+    ctx.beginPath();ctx.arc(x,y,discR,0,Math.PI*2);ctx.fillStyle=cg;ctx.fill();
+
+    // disc floret dots
+    if(centerP>0.45){
+      prng=9999;
+      for(let i=0;i<30;i++){
+        const da=pr()*Math.PI*2, dr=(3+pr()*(discR*0.82));
+        ctx.beginPath();ctx.arc(x+Math.cos(da)*dr,y+Math.sin(da)*dr,1.1*centerP,0,Math.PI*2);
+        ctx.fillStyle=`rgba(60,28,0,${fade*centerP*0.48})`;ctx.fill();
+      }
+    }
+
+    // warm glow
+    const glow=ctx.createRadialGradient(x,y,discR*0.5,x,y,discR*3);
+    glow.addColorStop(0,`rgba(255,210,50,${0.16*centerP*fade})`);
+    glow.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.globalAlpha=1;
+    ctx.beginPath();ctx.arc(x,y,discR*3,0,Math.PI*2);ctx.fillStyle=glow;ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+// ── FALLING PETALS ────────────────────────────────────────────────────────────
+function spawnFallingPetals(){
+  fallingPetals=[];petalFallDone=false;
+  const pc=28;
+  for(let i=0;i<pc;i++){
+    const angle=(i/pc)*Math.PI*2-Math.PI/2;
+    const r=95;
+    fallingPetals.push({
+      x:TX()+Math.cos(angle)*r,y:TY()+Math.sin(angle)*r,
+      vx:Math.cos(angle)*rand(0.5,1.5)+rand(-0.8,0.8),
+      vy:rand(1.2,3.2),
+      rot:rand(0,Math.PI*2),rs:rand(-0.08,0.08),
+      alpha:1,delay:i*0.035,
+      pLen:rand(40,75),pWid:rand(7,12)
+    });
+  }
+  sparkleShimmer(500,4);
+}
+function updateFallingPetals(dt){
+  let allGone=true;
+  fallingPetals.forEach(p=>{
+    if(p.delay>0){p.delay-=dt;allGone=false;return;}
+    p.vx+=rand(-0.05,0.05);p.vy+=0.07;
+    p.x+=p.vx;p.y+=p.vy;p.rot+=p.rs;
+    p.alpha=clamp(p.alpha-dt*1.1,0,1);
+    if(p.alpha>0)allGone=false;
+  });
+  if(allGone&&!petalFallDone){petalFallDone=true;whiteP=0;setPhase(4);}
+}
+function drawFallingPetals(){
+  fallingPetals.forEach(p=>{
+    if(p.alpha<=0||p.delay>0)return;
+    ctx.save();ctx.globalAlpha=p.alpha;
+    ctx.translate(p.x,p.y);ctx.rotate(p.rot);
+    const pg=ctx.createLinearGradient(0,-p.pLen,0,p.pLen*0.3);
+    pg.addColorStop(0,'#fff176');pg.addColorStop(0.5,'#ffd600');pg.addColorStop(1,'#e65100');
+    ctx.beginPath();
+    ctx.moveTo(0,-p.pLen);
+    ctx.bezierCurveTo(p.pWid,-p.pLen*0.5,p.pWid*0.8,p.pLen*0.1,0,p.pLen*0.3);
+    ctx.bezierCurveTo(-p.pWid*0.8,p.pLen*0.1,-p.pWid,-p.pLen*0.5,0,-p.pLen);
+    ctx.fillStyle=pg;ctx.fill();ctx.restore();
+  });
+}
+
+// ── WHITE PUFFBALL — spoke-based, true dandelion form, large ─────────────────
+function drawWhite(x,y,wp){
+  if(wp<=0)return;
+  // 160 spokes radiating from center — each is a filament + seed cluster at tip
+  const SPOKES=160;
+  const MAX_R=(130+Math.sin(breathe*0.6)*3)*wp;
+  ctx.save();
+
+  // ── tiny center receptacle knob
+  const cg=ctx.createRadialGradient(x,y,0,x,y,9*wp);
+  cg.addColorStop(0,'rgba(220,215,198,1)');
+  cg.addColorStop(1,'rgba(160,156,142,0.8)');
+  ctx.beginPath();ctx.arc(x,y,9*wp,0,Math.PI*2);ctx.fillStyle=cg;ctx.fill();
+
+  for(let i=0;i<SPOKES;i++){
+    const t=i/SPOKES;
+    // staggered bloom from center outward
+    const fp=clamp((wp - t*0.3)/0.7, 0, 1);
+    if(fp<=0)continue;
+
+    const angle=(i/SPOKES)*Math.PI*2;
+    // each spoke sways slightly — organic, not rigid
+    const sway=Math.sin(breathe*0.85 + i*0.41)*0.028;
+    const a=angle+sway;
+
+    // spoke length varies slightly — gives soft irregular silhouette
+    const lengthVar=0.88+Math.sin(i*1.37)*0.14;
+    const spokeLen=MAX_R*fp*lengthVar;
+
+    // tip position
+    const ex=x+Math.cos(a)*spokeLen;
+    const ey=y+Math.sin(a)*spokeLen;
+
+    // ── filament stem — very thin, fades at base
+    ctx.beginPath();
+    ctx.moveTo(x+Math.cos(a)*8*wp, y+Math.sin(a)*8*wp);
+    ctx.lineTo(ex,ey);
+    ctx.strokeStyle=`rgba(205,202,188,${fp*0.38})`;
+    ctx.lineWidth=0.6;ctx.stroke();
+
+    // ── seed head cluster at tip — the "ball" of each spoke
+    // multiple layered dots = fluffy cluster
+    const seedR=3*fp*wp;
+    // soft outer glow of cluster
+    const sg=ctx.createRadialGradient(ex,ey,0,ex,ey,seedR*3.5);
+    sg.addColorStop(0,`rgba(250,248,238,${fp*0.55})`);
+    sg.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.beginPath();ctx.arc(ex,ey,seedR*3.5,0,Math.PI*2);
+    ctx.fillStyle=sg;ctx.fill();
+    // crisp core
+    ctx.beginPath();ctx.arc(ex,ey,seedR,0,Math.PI*2);
+    ctx.fillStyle=`rgba(248,246,234,${fp*0.96})`;ctx.fill();
+    // tiny bright highlight on each seed
+    ctx.beginPath();ctx.arc(ex-seedR*0.3,ey-seedR*0.3,seedR*0.38,0,Math.PI*2);
+    ctx.fillStyle=`rgba(255,255,250,${fp*0.7})`;ctx.fill();
+
+    // ── parachute rays — 8 fine lines fanning from each seed tip
+    // this is what makes it read as a dandelion vs just dots
+    const rayLen=9*fp*wp;
+    const raySpread=0.55; // radian spread of fan
+    for(let j=0;j<8;j++){
+      const rf=j/7; // 0→1
+      const ra=a - raySpread/2 + rf*raySpread;
+      ctx.beginPath();
+      ctx.moveTo(ex,ey);
+      ctx.lineTo(ex+Math.cos(ra)*rayLen, ey+Math.sin(ra)*rayLen);
+      ctx.strokeStyle=`rgba(238,235,220,${fp*(0.28-rf*0.08)})`;
+      ctx.lineWidth=0.35;ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+// ── SEEDS (flying) ────────────────────────────────────────────────────────────
+function spawnSeeds(x,y){
+  seeds=[];
+  for(let i=0;i<90;i++){
+    const a=(i/90)*Math.PI*2,sp=rand(3.5,7);
+    seeds.push({x,y,vx:Math.cos(a)*sp*rand(0.6,1.4),vy:Math.sin(a)*sp*rand(0.6,1.4)-rand(0.5,2.5),
+      size:rand(1.8,3.2),rot:rand(0,Math.PI*2),rs:rand(-0.06,0.06),
+      turbX:rand(-0.04,0.04),turbY:rand(-0.01,0.02)});
+  }
+}
+function updateSeeds(dt){
+  seeds.forEach(s=>{s.vx+=s.turbX;s.vy+=s.turbY+0.013;s.x+=s.vx;s.y+=s.vy;s.vx*=0.984;s.vy*=0.984;s.rot+=s.rs;});
+}
+function drawSeeds(op){
+  seeds.forEach(s=>{
+    ctx.save();ctx.globalAlpha=op*0.85;ctx.translate(s.x,s.y);ctx.rotate(s.rot);
+    ctx.beginPath();ctx.arc(0,0,s.size,0,Math.PI*2);
+    ctx.fillStyle='rgba(240,237,224,0.92)';ctx.fill();
+    ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(0,-s.size*3.2);
+    ctx.strokeStyle='rgba(235,232,218,0.3)';ctx.lineWidth=0.5;ctx.stroke();
+    ctx.restore();
+  });
+}
+
+// ── LETTER PARTICLES — two-stage fast formation ──────────────────────────────
+// Stage 1: large groups snap to position instantly → readable in 0.5s
+// Stage 2: fine particles settle and drift subtly
+let escapedParticles = []; // particles that drift away after formation
+
+function buildQuoteDisplay(text){
+  letterParticles=[];escapedParticles=[];
+
+  const off=document.createElement('canvas');
+  // render at canvas size but text centered in upper third
+  off.width=canvas.width;off.height=canvas.height;
+  const oc=off.getContext('2d');
+
+  // raised position — text in upper 35% of screen, well above flower
+  const textY=canvas.height*0.32;
+  const fs=Math.min(canvas.width*0.052,64);
+  oc.font=`600 italic ${fs}px 'Cormorant Garamond',serif`;
+  oc.fillStyle='#fff';oc.textAlign='center';oc.textBaseline='middle';
+  // double render for density on thin strokes
+  oc.fillText(text,canvas.width/2,textY);
+  oc.fillText(text,canvas.width/2,textY);
+
+  const d=oc.getImageData(0,0,canvas.width,canvas.height).data;
+  const step=2;
+  const raw=[];
+  for(let py=0;py<canvas.height;py+=step)
+    for(let px=0;px<canvas.width;px+=step){
+      const idx=(py*canvas.width+px)*4;
+      if(d[idx+3]>90) raw.push({px,py,alpha:d[idx+3]});
+    }
+
+  if(!raw.length)return;
+
+  // shuffle so particles arrive from different directions
+  for(let i=raw.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    [raw[i],raw[j]]=[raw[j],raw[i]];
+  }
+
+  // Split into Stage1 (70% of pixels, arrive fast) and Stage2 (30%, refine)
+  const s1count=Math.floor(raw.length*0.72);
+
+  raw.forEach((r,i)=>{
+    const isStage1=i<s1count;
+    // launch from flower position (center bottom area)
+    const launchX=canvas.width/2+rand(-130,130);
+    const launchY=canvas.height*0.55+rand(-80,80);
+    // use seed positions for first batch
+    const seed=seeds[i%seeds.length];
+    letterParticles.push({
+      x: seed?seed.x:launchX,
+      y: seed?seed.y:launchY,
+      tx:r.px, ty:r.py,
+      size: isStage1 ? rand(1.6,2.6) : rand(1.2,2.0),
+      opacity:0,
+      // Stage 1: nearly zero delay, very fast settle
+      delay: isStage1 ? rand(0,0.12) : rand(0.08,0.4),
+      // Stage 1 settles in ~0.3s, Stage 2 in ~0.8s
+      speed: isStage1 ? rand(0.88,1.0) : rand(0.45,0.72),
+      stage: isStage1?1:2,
+      t:0,
+      // slight inner drift when settled
+      driftPhase:rand(0,Math.PI*2),
+      driftAmp:rand(0.3,0.9),
+      settled:false
+    });
+  });
+
+  // spawn a few escape particles that fly off after formation
+  for(let i=0;i<18;i++){
+    escapedParticles.push({
+      x:canvas.width/2+rand(-80,80),
+      y:canvas.height*0.32+rand(-30,30),
+      vx:rand(-0.8,0.8), vy:rand(-1.2,-0.2),
+      size:rand(1,2.2), alpha:0,
+      delay:rand(0.5,1.2), life:1
+    });
+  }
+}
+
+function updateLetterParticles(dt){
+  letterParticles.forEach(p=>{
+    p.delay=Math.max(0,p.delay-dt);
+    if(p.delay>0)return;
+    p.t=clamp(p.t+dt*p.speed,0,1);
+    // stage 1: easeOutQuint — aggressive snap
+    // stage 2: easeOut — smoother arrival
+    const ease=p.stage===1?easeOutQuint(p.t):easeOut(p.t);
+    p.x=lerp(p.x,p.tx,ease*0.22);
+    p.y=lerp(p.y,p.ty,ease*0.22);
+    p.opacity=clamp(p.t*3,0,1); // opacity up very fast
+    if(p.t>0.92)p.settled=true;
+  });
+
+  // update escape particles
+  escapedParticles.forEach(e=>{
+    e.delay=Math.max(0,e.delay-dt);
+    if(e.delay>0)return;
+    e.alpha=clamp(e.alpha+dt*2,0,0.6);
+    e.x+=e.vx; e.y+=e.vy;
+    e.vy-=0.008; // gentle float upward
+    e.life=clamp(e.life-dt*0.3,0,1);
+    e.alpha*=e.life;
+  });
+}
+
+function drawQuote(op){
+  if(op<=0||!letterParticles.length)return;
+  ctx.save();
+
+  // pass 1 — very subtle glow (30-40% less than before)
+  // only draw settled particles for glow to avoid fuzzy cloud on arrival
+  ctx.globalCompositeOperation='screen';
+  letterParticles.forEach(p=>{
+    if(!p.settled||p.delay>0)return;
+    ctx.save();ctx.globalAlpha=p.opacity*op*0.18; // reduced from 0.35
+    ctx.beginPath();ctx.arc(p.x,p.y,p.size*1.5,0,Math.PI*2);
+    ctx.fillStyle='rgba(255,242,180,0.6)';ctx.fill();
+    ctx.restore();
+  });
+
+  // pass 2 — bright crisp cores — all particles
+  ctx.globalCompositeOperation='source-over';
+  letterParticles.forEach(p=>{
+    if(p.opacity<=0||p.delay>0)return;
+    // settled particles get subtle inner drift
+    let dx=0,dy=0;
+    if(p.settled){
+      const phase=breathe*0.4+p.driftPhase;
+      dx=Math.cos(phase)*p.driftAmp;
+      dy=Math.sin(phase)*p.driftAmp*0.5;
+    }
+    ctx.save();ctx.globalAlpha=p.opacity*op;
+    ctx.beginPath();ctx.arc(p.x+dx,p.y+dy,p.size,0,Math.PI*2);
+    ctx.fillStyle='rgba(252,248,228,0.97)';ctx.fill();
+    // tiny highlight — gives each dot depth
+    ctx.beginPath();ctx.arc(p.x+dx-p.size*0.25,p.y+dy-p.size*0.25,p.size*0.3,0,Math.PI*2);
+    ctx.fillStyle='rgba(255,255,245,0.6)';ctx.fill();
+    ctx.restore();
+  });
+
+  // pass 3 — escape particles drifting away
+  ctx.globalCompositeOperation='source-over';
+  escapedParticles.forEach(e=>{
+    if(e.alpha<=0)return;
+    ctx.save();ctx.globalAlpha=e.alpha*op;
+    ctx.beginPath();ctx.arc(e.x,e.y,e.size,0,Math.PI*2);
+    ctx.fillStyle='rgba(248,242,210,0.8)';ctx.fill();
+    ctx.restore();
+  });
+
+  ctx.restore();
+}
+
+// ── IDLE SEED ─────────────────────────────────────────────────────────────────
+let idlePulse=0;
+function drawIdle(){
+  idlePulse+=0.025;
+  const x=cx(),y=canvas.height-28,g=Math.sin(idlePulse)*0.28+0.72;
+  ctx.save();
+  const gr=ctx.createRadialGradient(x,y,0,x,y,22);
+  gr.addColorStop(0,`rgba(255,248,200,${g*0.7})`);gr.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.beginPath();ctx.arc(x,y,22,0,Math.PI*2);ctx.fillStyle=gr;ctx.fill();
+  ctx.beginPath();ctx.arc(x,y,2.8,0,Math.PI*2);
+  ctx.fillStyle=`rgba(255,250,215,${g})`;ctx.fill();ctx.restore();
+}
+
+// ── MAIN LOOP ─────────────────────────────────────────────────────────────────
+let last=0;
+function render(now){
+  requestAnimationFrame(render);
+  const dt=Math.min((now-last)/1000,0.05);last=now;
+  breathe+=0.02;phaseTime+=dt;
+  drawBackground();
+
+  // cursor
+  ctx.save();
+  ctx.beginPath();ctx.arc(mx,my,3.5,0,Math.PI*2);
+  ctx.fillStyle='rgba(255,248,210,0.4)';ctx.fill();
+  ctx.beginPath();ctx.arc(mx,my,10,0,Math.PI*2);
+  ctx.strokeStyle='rgba(255,248,210,0.1)';ctx.lineWidth=1;ctx.stroke();
+  ctx.restore();
+
+  if(phase===0){drawIdle();return;}
+
+  // ── Phase 1: single unified grow animation ──────────────────────────────────
+  if(phase===1){
+    deriveStages(growProgress);
+    // Stem grows first — flower tip tracks stem tip exactly
+    drawStem(_stemP);
+    // Bud only appears once stem is visually substantial
+    if(_budP>0) drawBud(TX(),TY(),_budP);
+    // Petals and disc — disc gated by _centerP so it never floats free
+    if(_petalP>0) drawYellow(TX(),TY(),_petalP,0,_centerP);
+    else if(_centerP>0) drawYellow(TX(),TY(),0,0,_centerP); // disc only, no petals yet
+    return;
+  }
+
+  // All other phases — stem fully grown
+  drawStem(1);
+
+  if(phase===2){
+    // Full bloom idle — petals at full, wiggle to dismiss
+    drawYellow(TX(),TY(),1,0,1);
+  }
+
+  if(phase===3){
+    // Center disc persists while petals fall off
+    const discR=20;
+    const cg=ctx.createRadialGradient(TX(),TY(),0,TX(),TY(),discR);
+    cg.addColorStop(0,'#fff8d0');cg.addColorStop(0.35,'#ffe234');cg.addColorStop(1,'#7a4200');
+    ctx.beginPath();ctx.arc(TX(),TY(),discR,0,Math.PI*2);ctx.fillStyle=cg;ctx.fill();
+    updateFallingPetals(dt);drawFallingPetals();
+  }
+
+  if(phase===4)drawWhite(TX(),TY(),whiteP);
+
+  if(phase===5){
+    drawWhite(TX(),TY(),whiteP);
+    if(mouthRatio>MOUTH_T){
+      mouthTimer+=dt;
+      if(mouthTimer>0.5){triggerBlow();mouthTimer=0;}
+    } else mouthTimer=Math.max(0,mouthTimer-dt*2);
+  }
+
+  if(phase===6){
+    updateSeeds(dt);
+    // seeds fade fast — particles take over the story
+    drawSeeds(clamp(1-phaseTime*0.9,0,1));
+    // build quote IMMEDIATELY on first frame — don't wait 1.2s
+    if(!quoteBuilt){buildQuoteDisplay(quoteText);quoteBuilt=true;}
+    updateLetterParticles(dt);
+    if(phaseTime>0.3&&!quoteSounded){
+      sparkleRise(1000,5);
+      setTimeout(()=>sparkleShimmer(1300,3),250);
+      quoteSounded=true;
+    }
+    // opacity fades in fast — readable by 0.5s
+    quoteOpacity=clamp(quoteOpacity+dt*2.2,0,1);
+    drawQuote(quoteOpacity);
+    if(phaseTime>9)setPhase(7);
+  }
+
+  if(phase===7){
+    if(quoteBuilt)updateLetterParticles(dt);
+    quoteOpacity=clamp(quoteOpacity-dt*0.22,0,1);
+    drawQuote(quoteOpacity);
+    if(phaseTime>4){setPhase(8);qIdx++;}
+  }
+
+  if(phase===8){
+    ctx.save();ctx.globalAlpha=clamp(1-phaseTime*0.5,0,1);drawStem(stemP);ctx.restore();
+  }
+
+  document.getElementById('md').textContent=
+    phase===5?`mouth: ${mouthRatio.toFixed(3)} ${mouthRatio>MOUTH_T?'◉':'○'}`:'';
+}
+requestAnimationFrame(render);
+
+function triggerBlow(){
+  spawnSeeds(TX(),TY());
+  quoteText=QUOTES[qIdx%QUOTES.length];
+  quoteBuilt=false;quoteSounded=false;quoteOpacity=0;letterParticles=[];
+  windWhisper();
+  setTimeout(()=>sparkleRise(900,5),200);
+  setPhase(6);
+}
+
+function resetAll(){
+  growProgress=0;whiteP=0;stemP=0;
+  _stemP=0;_budP=0;_centerP=0;_petalP=0;
+  fallingPetals=[];petalFallDone=false;
+  seeds=[];letterParticles=[];escapedParticles=[];quoteOpacity=0;
+  quoteBuilt=false;quoteSounded=false;
+}
+
+// ── GESTURE HELPERS ───────────────────────────────────────────────────────────
+function isPointing(lm){
+  return lm[8].y<lm[6].y&&lm[12].y>lm[10].y&&lm[16].y>lm[14].y&&lm[20].y>lm[18].y;
+}
+function isOpen(lm){
+  let e=0;[[8,6],[12,10],[16,14],[20,18]].forEach(([t,b])=>{if(lm[t].y<lm[b].y)e++;});return e>=3;
+}
+function isPinching(lm){
+  return Math.hypot(lm[4].x-lm[8].x,lm[4].y-lm[8].y)<0.06;
+}
+
+// ── MEDIAPIPE HANDS ───────────────────────────────────────────────────────────
+const vid=document.getElementById('wv'),tc=document.getElementById('tc'),tctx=tc.getContext('2d');
+const handsMP=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+handsMP.setOptions({maxNumHands:1,modelComplexity:0,minDetectionConfidence:0.55,minTrackingConfidence:0.5});
+handsMP.onResults(r=>{
+  tc.width=vid.videoWidth||160;tc.height=vid.videoHeight||110;
+  tctx.clearRect(0,0,tc.width,tc.height);
+  if(r.multiHandLandmarks?.length){
+    const lm=r.multiHandLandmarks[0];
+    if((phase===0||phase===8)&&isPointing(lm)){
+      fingerTimer+=1/30;
+      if(fingerTimer>0.18){
+        resetAll();if(phase===8)qIdx++;
+        sparkleRise(800,5);setPhase(1);fingerTimer=0;
+      }
+    } else fingerTimer=Math.max(0,fingerTimer-1/30);
+
+    const nowOpen=isOpen(lm);
+    if(nowOpen!==handOpen){
+      handOpen=nowOpen;
+      if([1,4].includes(phase)) growTick();
+      // wiggle detection: count rapid toggles
+      if(phase===2){
+        wiggleCount++;
+        if(wiggleCount>=3){wiggleTick();wiggleCount=0;}
+      }
+    }
+
+    // pinch blow — index tip close to thumb tip
+    const pinchDist=Math.hypot(lm[4].x-lm[8].x,lm[4].y-lm[8].y);
+    const nowPinch=pinchDist<0.07;
+    if(phase===5){
+      if(nowPinch){
+        pinchTimer+=1/30;
+        if(pinchTimer>0.4){triggerBlow();pinchTimer=0;}
+      } else {
+        pinchTimer=Math.max(0,pinchTimer-1/30);
+      }
+    } else pinchTimer=0;
+
+    drawConnectors(tctx,lm,HAND_CONNECTIONS,{color:'rgba(255,255,255,0.15)',lineWidth:1});
+    drawLandmarks(tctx,lm,{color:'rgba(255,210,50,0.5)',lineWidth:1,radius:2});
+  } else {handOpen=false;fingerTimer=Math.max(0,fingerTimer-1/30);}
+});
+
+// ── MEDIAPIPE FACE ────────────────────────────────────────────────────────────
+const faceMP=new FaceMesh({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`});
+faceMP.setOptions({maxNumFaces:1,refineLandmarks:false,minDetectionConfidence:0.5,minTrackingConfidence:0.5});
+faceMP.onResults(r=>{
+  if(r.multiFaceLandmarks?.length) mouthRatio=Math.abs(r.multiFaceLandmarks[0][14].y-r.multiFaceLandmarks[0][13].y);
+  else mouthRatio=0;
+});
+
+// ── CAMERA ────────────────────────────────────────────────────────────────────
+let fc=0;
+const camera=new Camera(vid,{
+  onFrame:async()=>{fc++;await handsMP.send({image:vid});if(fc%2===0)await faceMP.send({image:vid});},
+  width:320,height:240
+});
+camera.start().catch(err=>{console.warn('Camera:',err);document.getElementById('wc').style.display='none';});
+
+// ── CLICK FALLBACK ────────────────────────────────────────────────────────────
+canvas.addEventListener('click',()=>{
+  if(phase===0||phase===8){resetAll();if(phase===8)qIdx++;sparkleRise(800,5);setPhase(1);}
+});
+</script>
+</body>
+</html>
